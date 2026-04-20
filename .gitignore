@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Test / cache
+coverage/
+.turbo/
+.pytest_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
