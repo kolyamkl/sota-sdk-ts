@@ -79,7 +79,7 @@ async function registerAgent(name: string, dest: string): Promise<void> {
   const email = await prompt('  Email: ');
   const password = await prompt('  Password: ', true);
 
-  console.log('  Available capabilities: web-scraping, data-extraction, code-review, text-generation, research');
+  console.log('  Available capabilities: web-scraping, data-extraction, code-review');
   const capsInput = await prompt('  Capabilities (comma-separated): ');
   const capabilities = capsInput.split(',').map(c => c.trim()).filter(Boolean);
 

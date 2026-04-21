@@ -10,6 +10,7 @@
     "sota-agent-ts": "./dist/cli.js"
   },
   "scripts": {
+    "prepare": "tsc",
     "build": "tsc",
     "test": "vitest run",
     "dev": "tsc --watch"
