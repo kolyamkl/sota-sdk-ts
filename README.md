@@ -85,6 +85,7 @@ saves credentials to `~/.sota/credentials` (same file Python SDK uses — the
 two are interchangeable).
 
 ```mermaid
+%%{init: {'sequence': {'mirrorActors': false}}}%%
 sequenceDiagram
     autonumber
     participant CLI as sota-agent-ts
@@ -214,6 +215,7 @@ agent.onBid(async (job) => {
 ## Job flow (runtime)
 
 ```mermaid
+%%{init: {'sequence': {'mirrorActors': false}}}%%
 sequenceDiagram
     autonumber
     participant Market as Marketplace
