@@ -74,3 +74,25 @@ export interface ProgressUpdate {
   percent: number;
   message?: string;
 }
+
+/** Shape returned by GET /api/v1/agents/jobs for sandbox agents. */
+export interface TestJob {
+  id: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  capability: string;
+  status: string;
+  time_limit_seconds?: number;
+  created_at: string;
+}
+
+export interface JobsListResponse {
+  jobs: Job[] | TestJob[];
+  sandbox?: boolean;
+  message?: string;
+}
+
+export interface TestJobDeliveryResult {
+  passed: boolean;
+  reason?: string;
+}

@@ -219,6 +219,116 @@ describe('SOTAAgent handlers', () => {
   });
 });
 
+// --- Token refresh cadence ---
+
+describe('token refresh cadence', () => {
+  it('refreshes 3 minutes before JWT expiry, not on a fixed interval', async () => {
+    vi.useFakeTimers();
+    const agent = new SOTAAgent({ apiKey: 'key' });
+
+    // 900s token => expect refresh at 720s (12 min), not at 600s (10 min).
+    (agent as any)._running = true;
+    (agent as any)._jwtExpiresAt = Date.now() + 900 * 1000;
+
+    const exchangeSpy = vi
+      .spyOn((agent as any)._client, 'exchangeToken')
+      .mockResolvedValue({ token: 'new-jwt', expires_in: 900 });
+
+    (agent as any)._scheduleTokenRefresh();
+
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(exchangeSpy).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2 * 60 * 1000 + 100);
+    expect(exchangeSpy).toHaveBeenCalledTimes(1);
+
+    (agent as any)._running = false;
+    vi.useRealTimers();
+  });
+
+  it('falls back to 60s floor when token already near expiry', async () => {
+    vi.useFakeTimers();
+    const agent = new SOTAAgent({ apiKey: 'key' });
+
+    (agent as any)._running = true;
+    (agent as any)._jwtExpiresAt = Date.now() + 30 * 1000; // already past the 3min buffer
+
+    const exchangeSpy = vi
+      .spyOn((agent as any)._client, 'exchangeToken')
+      .mockResolvedValue({ token: 'new-jwt', expires_in: 900 });
+
+    (agent as any)._scheduleTokenRefresh();
+
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(exchangeSpy).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(exchangeSpy).toHaveBeenCalledTimes(1);
+
+    (agent as any)._running = false;
+    vi.useRealTimers();
+  });
+});
+
+// --- Heartbeat 401 handling ---
+
+describe('heartbeat 401', () => {
+  it('sets fatalError and resolves stopPromise on 401, does not reschedule', async () => {
+    vi.useFakeTimers();
+    const agent = new SOTAAgent({ apiKey: 'key' });
+
+    vi.spyOn((agent as any)._client, 'heartbeat').mockRejectedValue(
+      new APIError(401, 'API key revoked'),
+    );
+
+    (agent as any)._running = true;
+    (agent as any)._stopPromise = new Promise<void>((resolve) => {
+      (agent as any)._resolveStop = resolve;
+    });
+
+    (agent as any)._scheduleHeartbeat();
+    await vi.advanceTimersByTimeAsync(25_001);
+    await Promise.resolve(); // flush microtasks so the catch block runs
+
+    expect((agent as any)._running).toBe(false);
+    expect((agent as any)._fatalError).toBeInstanceOf(APIError);
+    expect(((agent as any)._fatalError as APIError).status).toBe(401);
+
+    // Confirm no further heartbeats scheduled
+    const tasksBefore = (agent as any)._heartbeatTimeout;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect((agent as any)._heartbeatTimeout).toBe(tasksBefore);
+
+    vi.useRealTimers();
+  });
+
+  it('continues after non-auth errors', async () => {
+    vi.useFakeTimers();
+    const agent = new SOTAAgent({ apiKey: 'key' });
+
+    const hbSpy = vi
+      .spyOn((agent as any)._client, 'heartbeat')
+      .mockRejectedValueOnce(new APIError(503, 'upstream down'))
+      .mockResolvedValue({ status: 'ok' });
+
+    (agent as any)._running = true;
+    (agent as any)._stopPromise = new Promise<void>(() => {});
+
+    (agent as any)._scheduleHeartbeat();
+    await vi.advanceTimersByTimeAsync(25_001);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(25_001);
+    await Promise.resolve();
+
+    expect((agent as any)._fatalError).toBeNull();
+    expect((agent as any)._running).toBe(true);
+    expect(hbSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    (agent as any)._running = false;
+    vi.useRealTimers();
+  });
+});
+
 // --- Webhook replay protection ---
 
 describe('verifyWebhookSignature replay protection', () => {

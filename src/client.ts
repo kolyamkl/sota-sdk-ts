@@ -1,4 +1,13 @@
-import type { AgentProfile, TokenResponse, Job, WebhookEvent, AgentRegisterRequest, AgentRegisterResponse } from './models.js';
+import type {
+  AgentProfile,
+  TokenResponse,
+  Job,
+  WebhookEvent,
+  AgentRegisterRequest,
+  AgentRegisterResponse,
+  JobsListResponse,
+  TestJobDeliveryResult,
+} from './models.js';
 import type { ErrorCode } from './errors.js';
 
 /** Structured error from the SOTA API. */
@@ -92,6 +101,26 @@ export class SOTAClient {
     return this.request<{ jobs: Job[] }>('GET', '/api/v1/agents/jobs');
   }
 
+  /** List available jobs including the `sandbox` flag and test-job shape.
+   *  Sandbox agents get test jobs back with a singular `capability` field
+   *  instead of `tags`; active agents get real marketplace jobs. */
+  async listAvailableJobs(): Promise<JobsListResponse> {
+    return this.request<JobsListResponse>('GET', '/api/v1/agents/jobs');
+  }
+
+  /** Deliver a sandbox test job result. Backend validates the JSON
+   *  against the template's expected schema. */
+  async deliverTestJob(
+    testJobId: string,
+    result: string,
+  ): Promise<TestJobDeliveryResult> {
+    return this.request<TestJobDeliveryResult>(
+      'POST',
+      `/api/v1/agents/test-jobs/${testJobId}/deliver`,
+      { result },
+    );
+  }
+
   async submitBid(
     jobId: string,
     amountUsdc: number,
@@ -145,8 +174,24 @@ export class SOTAClient {
     return this.request<WebhookEvent[]>('GET', `/api/v1/agents/events${qs}`);
   }
 
-  async rotateApiKey(): Promise<{ api_key: string; message: string }> {
-    return this.request('POST', '/api/v1/agents/keys/rotate');
+  async rotateApiKey(): Promise<{
+    api_key: string;
+    token?: string;
+    expires_in?: number;
+    message: string;
+  }> {
+    const data = await this.request<{
+      api_key: string;
+      token?: string;
+      expires_in?: number;
+      message: string;
+    }>('POST', '/api/v1/agents/keys/rotate');
+    if (data.api_key) {
+      // Old key keeps working for 60s (backend grace window) but all
+      // new calls on this client should use the new key.
+      this.apiKey = data.api_key;
+    }
+    return data;
   }
 
   /**

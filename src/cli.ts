@@ -112,14 +112,27 @@ async function registerAgent(name: string, dest: string): Promise<void> {
     webhook_secret: string;
   };
 
+  // Fetch public developer config so the scaffolded .env is ready to run.
+  // Best-effort: if the endpoint fails, we still write the agent-specific
+  // values and tell the dev to run `sota-agent-ts config` later.
+  let devCfg: { supabase_url?: string; supabase_anon_key?: string } = {};
+  try {
+    const cfgResp = await fetch(`${apiUrl}/api/v1/developer/config`);
+    if (cfgResp.ok) devCfg = await cfgResp.json();
+  } catch {
+    // ignore — backend may be unreachable for config
+  }
+
   // Write credentials to .env
-  const envContent = [
+  const envLines = [
     `SOTA_API_KEY=${data.api_key}`,
     `SOTA_WEBHOOK_SECRET=${data.webhook_secret}`,
     `SOTA_AGENT_ID=${data.agent_id}`,
     `SOTA_API_URL=${apiUrl}`,
-  ].join('\n') + '\n';
-  writeFileSync(join(dest, '.env'), envContent);
+  ];
+  if (devCfg.supabase_url) envLines.push(`SUPABASE_URL=${devCfg.supabase_url}`);
+  if (devCfg.supabase_anon_key) envLines.push(`SUPABASE_ANON_KEY=${devCfg.supabase_anon_key}`);
+  writeFileSync(join(dest, '.env'), envLines.join('\n') + '\n');
 
   console.log(`\n  Agent '${name}' registered! (sandbox mode)`);
   console.log(`  Agent ID: ${data.agent_id}`);
@@ -137,6 +150,38 @@ async function login(): Promise<void> {
   } catch (e) {
     console.error(`Error: ${e instanceof Error ? e.message : e}`);
     process.exit(1);
+  }
+}
+
+async function config(envPath: string | null): Promise<void> {
+  const apiUrl = getApiUrl();
+  let resp: Response;
+  try {
+    resp = await fetch(`${apiUrl}/api/v1/developer/config`);
+  } catch (e) {
+    console.error(`Error: Could not reach SOTA API at ${apiUrl}: ${e instanceof Error ? e.message : e}`);
+    process.exit(1);
+  }
+  if (!resp.ok) {
+    console.error(`Error: ${await resp.text()}`);
+    process.exit(1);
+  }
+  const cfg = await resp.json() as {
+    api_url: string;
+    supabase_url: string;
+    supabase_anon_key: string;
+  };
+  const lines = [
+    `SOTA_API_URL=${cfg.api_url}`,
+    `SUPABASE_URL=${cfg.supabase_url}`,
+    `SUPABASE_ANON_KEY=${cfg.supabase_anon_key}`,
+  ];
+  if (envPath) {
+    const { appendFileSync } = await import('node:fs');
+    appendFileSync(envPath, `\n# SOTA developer config\n${lines.join('\n')}\n`);
+    console.log(`  Config appended to ${envPath}`);
+  } else {
+    for (const l of lines) console.log(l);
   }
 }
 
@@ -200,12 +245,17 @@ async function main(): Promise<void> {
     }
   } else if (args[0] === 'request-review') {
     await requestReview();
+  } else if (args[0] === 'config') {
+    const writeIdx = args.indexOf('--write');
+    const envPath = writeIdx >= 0 && args[writeIdx + 1] ? args[writeIdx + 1] : null;
+    await config(envPath);
   } else {
     console.log('Usage: sota-agent-ts <command> [options]');
     console.log('');
     console.log('Commands:');
     console.log('  login                     Authenticate via device code');
     console.log('  init <name> [--register]  Scaffold a new SOTA agent project');
+    console.log('  config [--write path]     Print (or append to .env) SDK config');
     console.log('  request-review            Request admin review after test jobs pass');
     process.exit(args.length === 0 ? 0 : 1);
   }

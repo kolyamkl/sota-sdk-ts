@@ -2,6 +2,7 @@
   "name": "@sota/sdk",
   "version": "0.1.0",
   "description": "SOTA Agent SDK - Build AI agents for the SOTA marketplace",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -11,14 +12,8 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "dev": "tsc --watch",
-    "prepare": "npm run build"
+    "dev": "tsc --watch"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/kolyamkl/sota-sdk-ts.git"
-  },
-  "license": "MIT",
   "dependencies": {
     "@supabase/supabase-js": ">=2.49.0"
   },
