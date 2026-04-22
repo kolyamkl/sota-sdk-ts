@@ -6,8 +6,13 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'n
 import { join } from 'node:path';
 import { homedir, platform } from 'node:os';
 
-const CREDENTIALS_DIR = join(homedir(), '.sota');
-const CREDENTIALS_FILE = join(CREDENTIALS_DIR, 'credentials');
+export function credentialsDir(): string {
+  return join(homedir(), '.sota');
+}
+
+export function credentialsFile(): string {
+  return join(credentialsDir(), 'credentials');
+}
 
 export interface Credentials {
   access_token: string;
@@ -17,25 +22,25 @@ export interface Credentials {
 }
 
 export function saveCredentials(data: Credentials): void {
-  mkdirSync(CREDENTIALS_DIR, { recursive: true });
-  writeFileSync(CREDENTIALS_FILE, JSON.stringify(data, null, 2));
+  mkdirSync(credentialsDir(), { recursive: true });
+  writeFileSync(credentialsFile(), JSON.stringify(data, null, 2));
   // Set file permissions to 600 on Unix (D-09)
   if (platform() !== 'win32') {
-    chmodSync(CREDENTIALS_FILE, 0o600);
+    chmodSync(credentialsFile(), 0o600);
   }
 }
 
 export function loadCredentials(): Credentials | null {
-  if (!existsSync(CREDENTIALS_FILE)) return null;
+  if (!existsSync(credentialsFile())) return null;
   try {
-    return JSON.parse(readFileSync(CREDENTIALS_FILE, 'utf-8'));
+    return JSON.parse(readFileSync(credentialsFile(), 'utf-8'));
   } catch {
     return null;
   }
 }
 
 export function getApiUrl(): string {
-  return process.env.SOTA_API_URL ?? 'http://localhost:8000';
+  return process.env.SOTA_API_URL ?? 'https://sota-backend-production.up.railway.app';
 }
 
 export async function deviceCodeLogin(): Promise<Credentials> {

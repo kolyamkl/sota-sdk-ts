@@ -96,3 +96,85 @@ export interface TestJobDeliveryResult {
   passed: boolean;
   reason?: string;
 }
+
+export interface AgentListItem {
+  id: string;
+  name: string;
+  status: string;
+  capabilities: string[];
+  last_seen_at: string | null;
+  created_at: string;
+}
+
+export interface AgentListResponse {
+  agents: AgentListItem[];
+  total: number;
+}
+
+export interface KeysListItem {
+  id: string;
+  label: string | null;
+  key_prefix: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface KeysListResponse {
+  keys: KeysListItem[];
+}
+
+export interface BidsListItem {
+  id: string;
+  job_id: string;
+  amount_usdc: number;
+  estimated_seconds: number | null;
+  status: string;
+  created_at: string;
+}
+
+export interface BidsListResponse {
+  bids: BidsListItem[];
+  total: number;
+}
+
+export interface ActivityLogEntry {
+  id: number;
+  agent_id: string;
+  event_type: string;
+  level: string;
+  job_id: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ActivityLogResponse {
+  entries: ActivityLogEntry[];
+  next_since_id: number | null;
+}
+
+export interface ReputationResponse {
+  score: number;
+  avg_rating: number;
+  total_ratings: number;
+  star_rating: number;
+}
+
+export interface DeleteAgentResponse {
+  deleted: boolean;
+  agent_id: string;
+}
+
+export interface RevokeKeyResponse {
+  revoked: boolean;
+  key_id: string;
+}
+
+export interface CreateApiKeyResponse {
+  api_key: string;
+  key_id: string;
+  key_prefix: string;
+  expires_at: string;
+  message: string;
+}

@@ -1,6 +1,8 @@
 import { APIError, SOTAClient } from './client.js';
 import { RealtimeManager } from './realtime.js';
 import { AgentError, ErrorCode } from './errors.js';
+import { JobLogger, NoopJobLogger } from './logger.js';
+import type { IJobLogger } from './logger.js';
 import type { Job, AutoBidConfig, AgentProfile, TestJob } from './models.js';
 
 export const SDK_VERSION = '0.1.0';
@@ -11,6 +13,7 @@ export const HEARTBEAT_INTERVAL_MS = 25_000; // 3 beats within backend's 90s off
 export interface JobContext {
   job: Job;
   agentId: string;
+  log: IJobLogger;
   updateProgress: (percent: number, message?: string) => Promise<void>;
   deliver: (result: string, resultHash?: string) => Promise<void>;
   fail: (code: ErrorCode, message: string, partialResult?: string, retryable?: boolean) => never;
@@ -230,6 +233,7 @@ export class SOTAAgent {
     const ctx: JobContext = {
       job: syntheticJob,
       agentId: this._profile!.id,
+      log: new NoopJobLogger(),
       updateProgress: async () => { /* no-op in sandbox */ },
       deliver: async (result) => {
         lastValidation = await this._client.deliverTestJob(testJob.id, result);
@@ -384,8 +388,22 @@ export class SOTAAgent {
   }
 
   private async _handleJobUpdate(job: Job): Promise<void> {
-    // Execute job when this agent is assigned as winner
+    // Only react to jobs where this agent is the declared winner.
     if (job.winner_agent_id !== this._profile?.id) return;
+
+    // On award (status=assigned) push the transition to executing ourselves.
+    // Escrow may still fund in the background, but we don't want to wait on
+    // it — the backend gates the handler on status='executing' and wallet-
+    // less / devnet-ATA-missing agents would otherwise stall forever.
+    if (job.status === 'assigned') {
+      try {
+        await this._client.acceptJob(job.id);
+      } catch (err) {
+        console.error(`[SOTA] Failed to accept job ${job.id}:`, err);
+      }
+      return;
+    }
+
     if (job.status !== 'executing') return;
 
     for (const [cap, handler] of this._jobHandlers) {
@@ -435,6 +453,7 @@ export class SOTAAgent {
     return {
       job,
       agentId: this._profile.id,
+      log: new JobLogger(job.id, this._client),
       updateProgress: async (percent, message) => {
         await this._client.reportProgress(job.id, percent, message);
       },

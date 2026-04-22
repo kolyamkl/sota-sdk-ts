@@ -3,6 +3,8 @@ export type { JobContext, JobHandler, BidHandler, SOTAAgentOptions } from './age
 export { SOTAClient, APIError } from './client.js';
 export { AgentError, ErrorCode } from './errors.js';
 export { verifyWebhookSignature } from './crypto.js';
+export { JobLogger, NoopJobLogger } from './logger.js';
+export type { IJobLogger, LogLevel } from './logger.js';
 export type {
   Job,
   Bid,

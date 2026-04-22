@@ -7,6 +7,14 @@ import type {
   AgentRegisterResponse,
   JobsListResponse,
   TestJobDeliveryResult,
+  AgentListResponse,
+  KeysListResponse,
+  BidsListResponse,
+  ActivityLogResponse,
+  ReputationResponse,
+  DeleteAgentResponse,
+  RevokeKeyResponse,
+  CreateApiKeyResponse,
 } from './models.js';
 import type { ErrorCode } from './errors.js';
 
@@ -26,24 +34,42 @@ export class APIError extends Error {
 export class SOTAClient {
   private apiKey: string;
   private baseUrl: string;
+  private jwt: string | null = null;
 
   constructor(apiKey: string, baseUrl = 'http://localhost:3001') {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
-  private headers(): Record<string, string> {
-    return {
-      'Content-Type': 'application/json',
-      'X-API-Key': this.apiKey,
-    };
+  setJwt(jwt: string | null): void {
+    this.jwt = jwt;
   }
 
-  private async request<T>(method: string, path: string, body?: unknown, retries = 3): Promise<T> {
+  private headers(authMode: 'api-key' | 'jwt' = 'api-key'): Record<string, string> {
+    const h: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authMode === 'jwt') {
+      if (!this.jwt) {
+        throw new APIError(401, 'JWT not set; call setJwt() first');
+      }
+      h['Authorization'] = `Bearer ${this.jwt}`;
+    } else {
+      h['X-API-Key'] = this.apiKey;
+    }
+    return h;
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    opts: { retries?: number; authMode?: 'api-key' | 'jwt' } = {},
+  ): Promise<T> {
+    const retries = opts.retries ?? 3;
+    const authMode = opts.authMode ?? 'api-key';
     const url = `${this.baseUrl}${path}`;
     const init: RequestInit = {
       method,
-      headers: this.headers(),
+      headers: this.headers(authMode),
     };
     if (body !== undefined) {
       init.body = JSON.stringify(body);
@@ -133,6 +159,15 @@ export class SOTAClient {
     });
   }
 
+  /** Acknowledge an award and advance the job to ``executing``.
+   * Use when the payment path hasn't promoted us out of ``assigned`` yet
+   * (devnet ATA missing, RPC outage, or the job was created without
+   * escrow funding). Safe to call idempotently — the backend rejects
+   * with 409 if we're already past ``assigned``. */
+  async acceptJob(jobId: string): Promise<{ job_id: string; status: string }> {
+    return this.request('POST', `/api/v1/agents/jobs/${jobId}/accept`);
+  }
+
   async deliver(
     jobId: string,
     result: string,
@@ -163,8 +198,12 @@ export class SOTAClient {
     jobId: string,
     percent: number,
     message?: string,
+    level: 'info' | 'warn' | 'error' = 'info',
   ): Promise<{ status: string }> {
-    const body: Record<string, unknown> = { job_id: jobId, percent };
+    if (level !== 'info' && level !== 'warn' && level !== 'error') {
+      throw new Error(`level must be info|warn|error, got ${level}`);
+    }
+    const body: Record<string, unknown> = { job_id: jobId, percent, level };
     if (message !== undefined) body.message = message;
     return this.request('POST', '/api/v1/agents/progress', body);
   }
@@ -192,6 +231,107 @@ export class SOTAClient {
       this.apiKey = data.api_key;
     }
     return data;
+  }
+
+  async listAgents(
+    opts: { status?: string; includeDeleted?: boolean } = {},
+  ): Promise<AgentListResponse> {
+    const params = new URLSearchParams();
+    if (opts.status) params.set('status', opts.status);
+    if (opts.includeDeleted) params.set('include_deleted', 'true');
+    const qs = params.toString();
+    return this.request<AgentListResponse>(
+      'GET',
+      `/api/v1/agents${qs ? `?${qs}` : ''}`,
+      undefined,
+      { authMode: 'jwt' },
+    );
+  }
+
+  async deleteAgent(agentId: string): Promise<DeleteAgentResponse> {
+    return this.request<DeleteAgentResponse>(
+      'DELETE',
+      `/api/v1/agents/${agentId}`,
+      undefined,
+      { authMode: 'jwt' },
+    );
+  }
+
+  async listBids(
+    opts: { status?: string; since?: string } = {},
+  ): Promise<BidsListResponse> {
+    const params = new URLSearchParams();
+    if (opts.status) params.set('status', opts.status);
+    if (opts.since) params.set('since', opts.since);
+    const qs = params.toString();
+    return this.request<BidsListResponse>(
+      'GET',
+      `/api/v1/agents/bids${qs ? `?${qs}` : ''}`,
+    );
+  }
+
+  async listKeys(
+    opts: { includeRevoked?: boolean } = {},
+  ): Promise<KeysListResponse> {
+    const params = new URLSearchParams();
+    if (opts.includeRevoked) params.set('include_revoked', 'true');
+    const qs = params.toString();
+    return this.request<KeysListResponse>(
+      'GET',
+      `/api/v1/agents/keys${qs ? `?${qs}` : ''}`,
+    );
+  }
+
+  async revokeKey(keyId: string): Promise<RevokeKeyResponse> {
+    return this.request<RevokeKeyResponse>(
+      'POST',
+      `/api/v1/agents/keys/${keyId}/revoke`,
+    );
+  }
+
+  async getActivityLog(
+    opts: {
+      sinceId?: number;
+      sinceTs?: string;
+      jobId?: string;
+      limit?: number;
+    } = {},
+  ): Promise<ActivityLogResponse> {
+    const params = new URLSearchParams();
+    params.set('limit', String(opts.limit ?? 200));
+    if (opts.sinceId !== undefined) params.set('since_id', String(opts.sinceId));
+    if (opts.sinceTs) params.set('since_ts', opts.sinceTs);
+    if (opts.jobId) params.set('job_id', opts.jobId);
+    return this.request<ActivityLogResponse>(
+      'GET',
+      `/api/v1/agents/activity-log?${params.toString()}`,
+    );
+  }
+
+  async getReputation(agentId: string): Promise<ReputationResponse> {
+    return this.request<ReputationResponse>(
+      'GET',
+      `/api/v1/agents/${agentId}/reputation`,
+    );
+  }
+
+  async retryTestJob(testJobId: string): Promise<{ status: string }> {
+    return this.request<{ status: string }>(
+      'POST',
+      `/api/v1/agents/test-jobs/${testJobId}/retry`,
+    );
+  }
+
+  async createApiKey(
+    agentId: string,
+    opts: { label?: string; expiresDays?: number } = {},
+  ): Promise<CreateApiKeyResponse> {
+    return this.request<CreateApiKeyResponse>(
+      'POST',
+      `/api/v1/agents/${agentId}/keys`,
+      { label: opts.label, expires_days: opts.expiresDays },
+      { authMode: 'jwt' },
+    );
   }
 
   /**

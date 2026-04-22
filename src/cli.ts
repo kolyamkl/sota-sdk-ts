@@ -1,16 +1,22 @@
 #!/usr/bin/env node
-
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { Command } from 'commander';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createInterface } from 'node:readline';
-import { saveCredentials, loadCredentials, deviceCodeLogin, getApiUrl } from './auth.js';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { deviceCodeLogin, getApiUrl } from './auth.js';
+import * as identity from './cli_commands/identity.js';
+import * as agentCmds from './cli_commands/agent.js';
+import * as runtime from './cli_commands/runtime.js';
+import * as jobsBids from './cli_commands/jobs_bids.js';
+import * as sandbox from './cli_commands/sandbox.js';
+import * as keys from './cli_commands/keys.js';
+import * as rep from './cli_commands/reputation_diag.js';
+import * as webhook from './cli_commands/webhook.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
 const TEMPLATES_DIR = join(__dirname, '..', 'templates');
-
 const TEMPLATE_FILES = [
   { src: 'agent.ts.tpl', dest: 'agent.ts' },
   { src: 'Dockerfile.tpl', dest: 'Dockerfile' },
@@ -21,47 +27,13 @@ const TEMPLATE_FILES = [
   { src: '.gitignore.tpl', dest: '.gitignore' },
 ];
 
-function prompt(question: string, hide = false): Promise<string> {
-  return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    if (hide) {
-      // Simple hidden input
-      process.stdout.write(question);
-      let input = '';
-      process.stdin.setRawMode?.(true);
-      process.stdin.resume();
-      process.stdin.on('data', (char) => {
-        const c = char.toString();
-        if (c === '\n' || c === '\r') {
-          process.stdin.setRawMode?.(false);
-          process.stdout.write('\n');
-          rl.close();
-          resolve(input);
-        } else if (c === '\u0003') {
-          process.exit(0);
-        } else {
-          input += c;
-          process.stdout.write('*');
-        }
-      });
-    } else {
-      rl.question(question, (answer) => {
-        rl.close();
-        resolve(answer);
-      });
-    }
-  });
-}
-
 function scaffoldProject(name: string): string {
   const targetDir = join(process.cwd(), name);
   if (existsSync(targetDir)) {
     console.error(`Error: Directory "${name}" already exists.`);
     process.exit(1);
   }
-
   mkdirSync(targetDir, { recursive: true });
-
   for (const { src, dest } of TEMPLATE_FILES) {
     const templatePath = join(TEMPLATES_DIR, src);
     if (!existsSync(templatePath)) continue;
@@ -69,196 +41,279 @@ function scaffoldProject(name: string): string {
     content = content.replaceAll('{{AGENT_NAME}}', name);
     writeFileSync(join(targetDir, dest), content);
   }
-
   return targetDir;
 }
 
-async function registerAgent(name: string, dest: string): Promise<void> {
-  const apiUrl = getApiUrl();
+export function buildProgram(): Command {
+  const program = new Command();
+  program
+    .name('sota-agent-ts')
+    .description('SOTA Agent SDK CLI')
+    .version('0.1.0', '-v, --version');
 
-  const email = await prompt('  Email: ');
-  const password = await prompt('  Password: ', true);
+  // Identity
+  program
+    .command('login')
+    .description('Authenticate via device code')
+    .action(async () => {
+      console.log('Starting device-code authentication...');
+      const creds = await deviceCodeLogin();
+      console.log(`\n  Authenticated as: ${creds.email}`);
+    });
 
-  console.log('  Available capabilities: web-scraping, data-extraction, code-review');
-  const capsInput = await prompt('  Capabilities (comma-separated): ');
-  const capabilities = capsInput.split(',').map(c => c.trim()).filter(Boolean);
+  program
+    .command('logout')
+    .description('Delete local credentials')
+    .option('-y, --yes', 'skip confirmation')
+    .action((opts) => identity.logoutAction(opts));
 
-  if (capabilities.length === 0) {
-    console.error('Error: At least one capability required.');
-    process.exit(1);
-  }
+  program
+    .command('whoami')
+    .description('Show current user')
+    .option('--json', 'machine-readable')
+    .action((opts) => identity.whoamiAction(opts));
 
-  console.log(`\n  Registering '${name}' with SOTA marketplace...`);
+  program
+    .command('init <name>')
+    .description('Scaffold a new SOTA agent project')
+    .option('--register', 'also register the agent after scaffolding')
+    .action(async (name: string, opts: { register?: boolean }) => {
+      const dest = scaffoldProject(name);
+      console.log(`\nCreated agent project: ${name}/`);
+      if (opts.register) {
+        console.log('(Registration flow TBD — run `sota-agent-ts agent register` in the new dir.)');
+      } else {
+        console.log('Next steps:');
+        console.log(`  cd ${name}`);
+        console.log('  cp .env.example .env');
+        console.log('  npm install');
+        console.log('  npm start');
+      }
+    });
 
-  const resp = await fetch(`${apiUrl}/api/v1/agents/register/simple`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, agent_name: name, capabilities }),
-  });
+  program
+    .command('config')
+    .description('Print (or append) SDK config')
+    .option('--write <envPath>', 'append config to this .env file')
+    .action(async (opts: { write?: string }) => {
+      const r = await fetch(`${getApiUrl()}/api/v1/developer/config`);
+      if (!r.ok) {
+        console.error(`Error: ${await r.text()}`);
+        process.exit(1);
+      }
+      const cfg = await r.json() as {
+        api_url: string; supabase_url: string; supabase_anon_key: string;
+      };
+      const lines = [
+        `SOTA_API_URL=${cfg.api_url}`,
+        `SUPABASE_URL=${cfg.supabase_url}`,
+        `SUPABASE_ANON_KEY=${cfg.supabase_anon_key}`,
+      ];
+      if (opts.write) {
+        const { appendFileSync } = await import('node:fs');
+        appendFileSync(opts.write, `\n# SOTA developer config\n${lines.join('\n')}\n`);
+        console.log(`  Config appended to ${opts.write}`);
+      } else {
+        for (const l of lines) console.log(l);
+      }
+    });
 
-  if (resp.status === 429) {
-    console.error('Error: Rate limit exceeded. Try again later.');
-    process.exit(1);
-  }
+  // Agent group
+  const agent = program.command('agent').description('Agent CRUD');
+  agent.command('list')
+    .description('List your agents')
+    .option('--json', 'machine-readable')
+    .option('--status <s>', 'filter by status')
+    .option('--include-deleted', 'include soft-deleted')
+    .action((opts) => agentCmds.agentListAction(opts));
+  agent.command('register')
+    .description('Register a new agent')
+    .option('--name <n>', 'agent name')
+    .option('--caps <csv>', 'comma-separated capabilities')
+    .option('--wallet <addr>', 'Solana wallet address')
+    .option('--desc <d>', 'description')
+    .option('--webhook <url>', 'webhook URL')
+    .action((opts) => agentCmds.agentRegisterAction(opts));
+  agent.command('delete <id>')
+    .description('Soft-delete an agent')
+    .option('-y, --yes', 'skip confirmation')
+    .action((id, opts) => agentCmds.agentDeleteAction(id, opts));
+  agent.command('show [id]')
+    .description('Show agent details')
+    .option('--json', 'machine-readable')
+    .action((id, opts) => agentCmds.agentShowAction(id, opts));
+  agent.command('set <field> <value>')
+    .description('Update a single editable field')
+    .option('--json', 'machine-readable')
+    .action((field, value, opts) => agentCmds.agentSetAction(field, value, opts));
+  agent.command('edit [id]')
+    .description('Open editable fields in $EDITOR as YAML')
+    .option('-y, --yes', 'skip capability re-gate prompt')
+    .action((id, opts) => agentCmds.agentEditAction(id, opts));
+  agent.command('switch <id>')
+    .description('Switch CWD .env to a different agent (stub)')
+    .option('-y, --yes', 'skip prompt')
+    .action((id, opts) => agentCmds.agentSwitchAction(id, opts));
 
-  if (!resp.ok) {
-    console.error(`Error: ${await resp.text()}`);
-    process.exit(1);
-  }
+  // Runtime
+  program.command('status')
+    .description('Show current agent status')
+    .option('--json', 'machine-readable')
+    .action((opts) => runtime.statusAction(opts));
+  program.command('watch')
+    .description('Live-render status')
+    .option('-i, --interval <s>', 'poll interval in seconds', parseFloat, 5)
+    .option('--forever', 'keep watching even after status settles')
+    .action((opts) => runtime.watchAction(opts));
+  program.command('ping')
+    .description('Check backend + key health')
+    .action(() => runtime.pingAction());
+  program.command('run')
+    .description('Run the agent in CWD (npm start / python agent.py)')
+    .action(() => runtime.runAction());
+  program.command('logs')
+    .description('Stream server-side agent events')
+    .option('--follow', 'keep polling (default on)', true)
+    .option('--no-follow', 'fetch one page and exit')
+    .option('--interval <s>', 'poll interval', parseFloat, 2)
+    .option('--job <id>', 'filter by job id')
+    .option('--since <ts>', 'ISO timestamp backfill')
+    .option('--limit <n>', 'max per poll', parseInt, 200)
+    .option('--json', 'NDJSON for piping')
+    .action((opts) => runtime.logsAction({
+      follow: opts.follow !== false,
+      json: !!opts.json,
+      interval: opts.interval,
+      limit: opts.limit,
+      jobId: opts.job,
+      since: opts.since,
+    }));
 
-  const data = await resp.json() as {
-    agent_id: string;
-    api_key: string;
-    webhook_secret: string;
-  };
+  // Jobs & bids
+  const jobs = program.command('jobs').description('Jobs this agent sees');
+  jobs.command('list')
+    .description('List jobs')
+    .option('--json', 'machine-readable')
+    .option('--limit <n>', 'max results', parseInt, 50)
+    .action((opts) => jobsBids.jobsListAction(opts));
+  program.command('job-show <id>')
+    .description('Show details for one job')
+    .option('--json', 'machine-readable')
+    .action((id, opts) => jobsBids.jobShowAction(id, opts));
 
-  // Fetch public developer config so the scaffolded .env is ready to run.
-  // Best-effort: if the endpoint fails, we still write the agent-specific
-  // values and tell the dev to run `sota-agent-ts config` later.
-  let devCfg: { supabase_url?: string; supabase_anon_key?: string } = {};
-  try {
-    const cfgResp = await fetch(`${apiUrl}/api/v1/developer/config`);
-    if (cfgResp.ok) devCfg = await cfgResp.json();
-  } catch {
-    // ignore — backend may be unreachable for config
-  }
+  const bids = program.command('bids').description('Bids placed by this agent');
+  bids.command('list')
+    .description('List bids')
+    .option('--json', 'machine-readable')
+    .option('--status <s>', 'filter by status')
+    .option('--since <ts>', 'ISO created_at lower bound')
+    .action((opts) => jobsBids.bidsListAction(opts));
+  const bidG = program.command('bid').description('Single-bid operations');
+  bidG.command('submit <jobId>')
+    .description('Manually submit a bid')
+    .requiredOption('--amount <usdc>', 'USDC amount', parseFloat)
+    .requiredOption('--eta <seconds>', 'estimated seconds', parseInt)
+    .action((jobId, opts) => jobsBids.bidSubmitAction(jobId, opts));
+  bidG.command('cancel <bidId>')
+    .description('Cancel a bid (stub)')
+    .option('-y, --yes', 'skip prompt')
+    .action((id, opts) => jobsBids.bidCancelAction(id, opts));
 
-  // Write credentials to .env
-  const envLines = [
-    `SOTA_API_KEY=${data.api_key}`,
-    `SOTA_WEBHOOK_SECRET=${data.webhook_secret}`,
-    `SOTA_AGENT_ID=${data.agent_id}`,
-    `SOTA_API_URL=${apiUrl}`,
-  ];
-  if (devCfg.supabase_url) envLines.push(`SUPABASE_URL=${devCfg.supabase_url}`);
-  if (devCfg.supabase_anon_key) envLines.push(`SUPABASE_ANON_KEY=${devCfg.supabase_anon_key}`);
-  writeFileSync(join(dest, '.env'), envLines.join('\n') + '\n');
+  // Sandbox + review
+  const sb = program.command('sandbox').description('Sandbox gate ops');
+  sb.command('status')
+    .description('Sandbox test progress')
+    .option('--json', 'machine-readable')
+    .action((opts) => sandbox.sandboxStatusAction(opts));
+  sb.command('retry <testJobId>')
+    .description('Retry a failed sandbox test job')
+    .action((id) => sandbox.sandboxRetryAction(id));
+  const rv = program.command('review').description('Review gate ops');
+  rv.command('request')
+    .description('Request admin review')
+    .action(() => sandbox.reviewRequestAction());
+  rv.command('status')
+    .description('Check review status')
+    .option('--json', 'machine-readable')
+    .action((opts) => sandbox.reviewStatusAction(opts));
+  program.command('request-review', { hidden: true })
+    .action(() => sandbox.reviewRequestAction());
 
-  console.log(`\n  Agent '${name}' registered! (sandbox mode)`);
-  console.log(`  Agent ID: ${data.agent_id}`);
-  console.log(`  API key written to .env`);
-  console.log(`  Webhook secret written to .env`);
-  console.log(`  Complete 3 test jobs to request marketplace approval`);
-}
+  // Keys
+  const keysG = program.command('keys').description('API key management');
+  keysG.command('list')
+    .description('List keys')
+    .option('--json', 'machine-readable')
+    .option('--include-revoked', 'include revoked')
+    .action((opts) => keys.keysListAction(opts));
+  keysG.command('rotate')
+    .description('Rotate current API key + atomically rewrite .env')
+    .action(() => keys.keysRotateAction());
+  keysG.command('create')
+    .description('Create a new API key (JWT-gated)')
+    .option('--label <l>', 'key label')
+    .option('--expires-days <n>', 'expire after N days', parseInt)
+    .option('--json', 'machine-readable')
+    .action((opts) => keys.keysCreateAction(opts));
+  keysG.command('revoke <keyId>')
+    .description('Revoke a key')
+    .option('-y, --yes', 'skip prompt')
+    .action((id, opts) => keys.keysRevokeAction(id, opts));
 
-async function login(): Promise<void> {
-  console.log('Starting device-code authentication...');
-  try {
-    const creds = await deviceCodeLogin();
-    console.log(`\n  Authenticated as: ${creds.email}`);
-    console.log('  Credentials saved to ~/.sota/credentials');
-  } catch (e) {
-    console.error(`Error: ${e instanceof Error ? e.message : e}`);
-    process.exit(1);
-  }
-}
+  // Reputation + diagnostics
+  program.command('reputation')
+    .alias('rep')
+    .description('Show reputation stats')
+    .option('--json', 'machine-readable')
+    .action((opts) => rep.reputationAction(opts));
+  program.command('doctor')
+    .description('Diagnose env, backend, auth, capabilities')
+    .action(() => rep.doctorAction());
+  program.command('capabilities')
+    .alias('caps')
+    .description('Print supported capabilities')
+    .option('--json', 'machine-readable')
+    .action((opts) => rep.capabilitiesAction(opts));
+  program.command('onboard')
+    .description('Print onboarding markdown')
+    .action(() => rep.onboardAction());
 
-async function config(envPath: string | null): Promise<void> {
-  const apiUrl = getApiUrl();
-  let resp: Response;
-  try {
-    resp = await fetch(`${apiUrl}/api/v1/developer/config`);
-  } catch (e) {
-    console.error(`Error: Could not reach SOTA API at ${apiUrl}: ${e instanceof Error ? e.message : e}`);
-    process.exit(1);
-  }
-  if (!resp.ok) {
-    console.error(`Error: ${await resp.text()}`);
-    process.exit(1);
-  }
-  const cfg = await resp.json() as {
-    api_url: string;
-    supabase_url: string;
-    supabase_anon_key: string;
-  };
-  const lines = [
-    `SOTA_API_URL=${cfg.api_url}`,
-    `SUPABASE_URL=${cfg.supabase_url}`,
-    `SUPABASE_ANON_KEY=${cfg.supabase_anon_key}`,
-  ];
-  if (envPath) {
-    const { appendFileSync } = await import('node:fs');
-    appendFileSync(envPath, `\n# SOTA developer config\n${lines.join('\n')}\n`);
-    console.log(`  Config appended to ${envPath}`);
-  } else {
-    for (const l of lines) console.log(l);
-  }
-}
+  // Webhook
+  const wh = program.command('webhook').description('Webhook helpers');
+  wh.command('verify <path>')
+    .description('Verify HMAC against raw body bytes')
+    .requiredOption('--sig <hex>', 'signature header value')
+    .action((path, opts) => webhook.webhookVerifyAction(path, opts));
+  wh.command('test')
+    .description('Send a synthetic signed webhook to a local handler')
+    .requiredOption('--url <url>', 'handler URL')
+    .requiredOption('--job-id <id>', 'job id to include in body')
+    .action((opts) => webhook.webhookTestAction(opts));
 
-async function requestReview(): Promise<void> {
-  const creds = loadCredentials();
-  if (!creds) {
-    console.error("Error: Not logged in. Run 'sota-agent-ts login' first.");
-    process.exit(1);
-  }
-
-  let apiKey = process.env.SOTA_API_KEY;
-  if (!apiKey) {
-    const envPath = join(process.cwd(), '.env');
-    if (existsSync(envPath)) {
-      const envContent = readFileSync(envPath, 'utf-8');
-      const match = envContent.match(/^SOTA_API_KEY=(.+)$/m);
-      if (match) apiKey = match[1].trim();
-    }
-  }
-
-  if (!apiKey) {
-    console.error('Error: No API key found. Set SOTA_API_KEY or run from agent project directory.');
-    process.exit(1);
-  }
-
-  const apiUrl = getApiUrl();
-  const resp = await fetch(`${apiUrl}/api/v1/agents/request-review`, {
-    method: 'POST',
-    headers: { 'X-API-Key': apiKey },
-  });
-
-  if (resp.ok) {
-    const data = await resp.json() as { agent_id?: string };
-    console.log(`\n  Review requested for agent ${data.agent_id ?? ''}`);
-    console.log('  An admin will review your agent\'s test results.');
-  } else {
-    console.error(`Error: ${await resp.text()}`);
-    process.exit(1);
-  }
+  return program;
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-
-  if (args[0] === 'login') {
-    await login();
-  } else if (args[0] === 'init' && args[1]) {
-    const name = args[1];
-    const shouldRegister = args.includes('--register');
-    const dest = scaffoldProject(name);
-    console.log(`\nCreated agent project: ${name}/\n`);
-
-    if (shouldRegister) {
-      await registerAgent(name, dest);
-    } else {
-      console.log('Next steps:');
-      console.log(`  cd ${name}`);
-      console.log('  cp .env.example .env   # Fill in your API keys');
-      console.log('  npm install');
-      console.log('  npm start');
+  const program = buildProgram();
+  try {
+    await program.parseAsync(process.argv);
+  } catch (err) {
+    if (err instanceof Error) {
+      console.error(err.message);
     }
-  } else if (args[0] === 'request-review') {
-    await requestReview();
-  } else if (args[0] === 'config') {
-    const writeIdx = args.indexOf('--write');
-    const envPath = writeIdx >= 0 && args[writeIdx + 1] ? args[writeIdx + 1] : null;
-    await config(envPath);
-  } else {
-    console.log('Usage: sota-agent-ts <command> [options]');
-    console.log('');
-    console.log('Commands:');
-    console.log('  login                     Authenticate via device code');
-    console.log('  init <name> [--register]  Scaffold a new SOTA agent project');
-    console.log('  config [--write path]     Print (or append to .env) SDK config');
-    console.log('  request-review            Request admin review after test jobs pass');
-    process.exit(args.length === 0 ? 0 : 1);
+    process.exit(1);
   }
 }
 
-main();
+function isDirectlyInvoked(): boolean {
+  try {
+    const invoked = pathToFileURL(realpathSync(process.argv[1])).href;
+    return invoked === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectlyInvoked()) {
+  main();
+}

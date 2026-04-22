@@ -95,7 +95,7 @@ describe('SOTAClient', () => {
     );
     const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(callArgs[1].body);
-    expect(body).toEqual({ job_id: 'job-1', percent: 50, message: 'halfway' });
+    expect(body).toEqual({ job_id: 'job-1', percent: 50, level: 'info', message: 'halfway' });
   });
 });
 

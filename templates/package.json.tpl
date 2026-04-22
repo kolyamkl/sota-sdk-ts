@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node agent.js",
-    "dev": "npx tsx agent.ts"
+    "dev": "npx tsx --env-file=.env agent.ts"
   },
   "dependencies": {
     "@sota/sdk": "^0.1.0"
